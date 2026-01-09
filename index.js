@@ -1,3 +1,6 @@
+// FILE: uas-microservice-dashboard/index.js
+// FUNCTION: PROMPT SERVICE (CRUD Data)
+
 const express = require('express');
 const { MongoClient, ObjectId } = require('mongodb');
 const jwt = require('jsonwebtoken');
@@ -7,63 +10,95 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// ENVIRONMENT VARIABLES
+// --- KONFIGURASI DATABASE KHUSUS DATA ---
 const MONGODB_URI = process.env.MONGODB_URI;
-const DB_NAME = 'kependudukan_db';
-const SECRET_KEY = process.env.SECRET_KEY || 'rahasia_negara_top_secret'; // Harus SAMA dengan Login
+const DB_NAME = 'microservice_prompts'; // Database 2 (BEDA DENGAN AUTH!)
+const SECRET_KEY = process.env.SECRET_KEY || 'kunci_rahasia_negara';
 
-if (!MONGODB_URI) console.error("⚠️ MONGODB_URI belum di-set di Vercel Dashboard!");
-
-// FUNGSI PERIKSA TOKEN (Middleware)
+// Middleware: Pengecekan Token
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // Format: "Bearer TOKEN"
-
-    if (!token) return res.status(401).json({ error: "Akses Ditolak: Token tidak ada" });
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) return res.status(401).json({ error: "Akses Ditolak (Butuh Token)" });
 
     jwt.verify(token, SECRET_KEY, (err, user) => {
-        if (err) return res.status(403).json({ error: "Token tidak valid atau kadaluwarsa" });
-        req.user = user; // Simpan data user dari token
+        if (err) return res.status(403).json({ error: "Token Tidak Valid" });
+        req.user = user;
         next();
     });
 }
 
-app.get('/', (req, res) => res.send('Microservice Dashboard: ONLINE'));
-
-// API UTAMA: AMBIL DATA PROFIL
-app.get('/api/dashboard', authenticateToken, async (req, res) => {
-    let client;
+// --- CRUD 1: CREATE (Simpan Prompt) ---
+app.post('/api/prompts', authenticateToken, async (req, res) => {
+    const { title, content, category } = req.body;
+    let client = new MongoClient(MONGODB_URI);
     try {
-        client = new MongoClient(MONGODB_URI);
         await client.connect();
         const db = client.db(DB_NAME);
         
-        // Cari user berdasarkan ID yang ada di dalam Token
-        // Kita exclude password agar tidak ikut terkirim (projection)
-        const userProfile = await db.collection('users').findOne(
-            { _id: new ObjectId(req.user.id) },
-            { projection: { password: 0 } } 
-        );
-
-        if (!userProfile) {
-            return res.status(404).json({ error: "Data penduduk tidak ditemukan" });
-        }
-
-        // Kirim data ke Frontend
-        res.json({ 
-            status: "sukses", 
-            data: userProfile 
+        await db.collection('items').insertOne({
+            userId: req.user.id, // ID Pemilik
+            title,
+            content,
+            category,
+            createdAt: new Date()
         });
-
-    } catch (error) {
-        console.error("Dashboard Error:", error);
-        res.status(500).json({ error: "Gagal mengambil data dari database" });
-    } finally {
-        if (client) client.close();
-    }
+        res.json({ message: "Prompt Berhasil Disimpan!" });
+    } catch (e) { res.status(500).send(e.toString()); } finally { client.close(); }
 });
 
-const PORT = process.env.PORT || 3003;
-app.listen(PORT, () => console.log(`Server Dashboard jalan di port ${PORT}`));
+// --- CRUD 2: READ (Baca Semua Prompt Saya) ---
+app.get('/api/prompts', authenticateToken, async (req, res) => {
+    let client = new MongoClient(MONGODB_URI);
+    try {
+        await client.connect();
+        const db = client.db(DB_NAME);
+        
+        // Hanya ambil data milik user yang sedang login
+        const items = await db.collection('items')
+            .find({ userId: req.user.id })
+            .sort({ createdAt: -1 })
+            .toArray();
+            
+        res.json(items);
+    } catch (e) { res.status(500).send(e.toString()); } finally { client.close(); }
+});
 
+// --- CRUD 3: UPDATE (Edit Prompt) ---
+app.put('/api/prompts/:id', authenticateToken, async (req, res) => {
+    const { id } = req.params;
+    const { title, content, category } = req.body;
+    let client = new MongoClient(MONGODB_URI);
+    try {
+        await client.connect();
+        const db = client.db(DB_NAME);
+        
+        await db.collection('items').updateOne(
+            { _id: new ObjectId(id), userId: req.user.id },
+            { $set: { title, content, category } }
+        );
+        res.json({ message: "Prompt Berhasil Diupdate!" });
+    } catch (e) { res.status(500).send(e.toString()); } finally { client.close(); }
+});
+
+// --- CRUD 4: DELETE (Hapus Prompt) ---
+app.delete('/api/prompts/:id', authenticateToken, async (req, res) => {
+    const { id } = req.params;
+    let client = new MongoClient(MONGODB_URI);
+    try {
+        await client.connect();
+        const db = client.db(DB_NAME);
+        
+        await db.collection('items').deleteOne({ 
+            _id: new ObjectId(id), 
+            userId: req.user.id 
+        });
+        res.json({ message: "Prompt Dihapus!" });
+    } catch (e) { res.status(500).send(e.toString()); } finally { client.close(); }
+});
+
+app.get('/', (req, res) => res.send("PROMPT SERVICE IS RUNNING..."));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Prompt Service running on port ${PORT}`));
 module.exports = app;
